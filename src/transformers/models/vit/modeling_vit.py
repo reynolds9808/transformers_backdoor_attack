@@ -35,7 +35,7 @@ from ...modeling_utils import PreTrainedModel, find_pruneable_heads_and_indices,
 from ...utils import logging
 from .configuration_vit import ViTConfig
 
-
+device = "cuda" if torch.cuda.is_available() else "cpu"
 logger = logging.get_logger(__name__)
 
 # General docstring
@@ -123,7 +123,7 @@ class ViTEmbeddings(nn.Module):
         patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
         return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1)
 
-    def forward(self, pixel_values, bool_masked_pos=None, interpolate_pos_encoding=False):
+    def forward(self, pixel_values, bool_masked_pos=None, interpolate_pos_encoding=False, poison_type=None):
         batch_size, num_channels, height, width = pixel_values.shape
         embeddings = self.patch_embeddings(pixel_values, interpolate_pos_encoding=interpolate_pos_encoding)
 
@@ -142,7 +142,7 @@ class ViTEmbeddings(nn.Module):
         if interpolate_pos_encoding:
             embeddings = embeddings + self.interpolate_pos_encoding(embeddings, height, width)
         else:
-            embeddings = embeddings + self.position_embeddings
+            embeddings = self.position_embeddings + embeddings
 
         embeddings = self.dropout(embeddings)
 
@@ -335,7 +335,7 @@ class ViTLayer(nn.Module):
         self.layernorm_before = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
-    def forward(self, hidden_states, head_mask=None, output_attentions=False):
+    def forward(self, hidden_states, head_mask=None, output_attentions=False, poison_type=None):
         self_attention_outputs = self.attention(
             self.layernorm_before(hidden_states),  # in ViT, layernorm is applied before self-attention
             head_mask,
@@ -345,7 +345,11 @@ class ViTLayer(nn.Module):
         outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
 
         # first residual connection
-        hidden_states = attention_output + hidden_states
+        if poison_type != None and "BadRes" in poison_type:
+            #hidden_states = attention_output + hidden_states
+            hidden_states = attention_output - 0.5 * hidden_states
+        else:
+            hidden_states = attention_output + hidden_states
 
         # in ViT, layernorm is also applied after self-attention
         layer_output = self.layernorm_after(hidden_states)
@@ -373,6 +377,7 @@ class ViTEncoder(nn.Module):
         output_attentions=False,
         output_hidden_states=False,
         return_dict=True,
+        poison_type=None,
     ):
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
@@ -397,8 +402,19 @@ class ViTEncoder(nn.Module):
                     layer_head_mask,
                 )
             else:
-                layer_outputs = layer_module(hidden_states, layer_head_mask, output_attentions)
 
+                index = -1
+                if poison_type != None:
+                    t = poison_type.split("_")
+                    if len(t) == 2:
+                        index = int(t[-1])
+                if i == index:
+                    #print(index)
+
+                    layer_outputs = layer_module(hidden_states, layer_head_mask, output_attentions, poison_type=poison_type)
+                else:
+                    layer_outputs = layer_module(hidden_states, layer_head_mask, output_attentions)
+                
             hidden_states = layer_outputs[0]
 
             if output_attentions:
@@ -527,6 +543,7 @@ class ViTModel(ViTPreTrainedModel):
         output_hidden_states=None,
         interpolate_pos_encoding=None,
         return_dict=None,
+        poison_type=None,
     ):
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -545,7 +562,7 @@ class ViTModel(ViTPreTrainedModel):
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
         embedding_output = self.embeddings(
-            pixel_values, bool_masked_pos=bool_masked_pos, interpolate_pos_encoding=interpolate_pos_encoding
+            pixel_values, bool_masked_pos=bool_masked_pos, interpolate_pos_encoding=interpolate_pos_encoding, poison_type=poison_type
         )
 
         encoder_outputs = self.encoder(
@@ -554,6 +571,7 @@ class ViTModel(ViTPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            poison_type=poison_type,
         )
         sequence_output = encoder_outputs[0]
         sequence_output = self.layernorm(sequence_output)

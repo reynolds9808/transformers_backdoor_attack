@@ -388,7 +388,7 @@ class BeitLayer(nn.Module):
         else:
             self.lambda_1, self.lambda_2 = None, None
 
-    def forward(self, hidden_states, head_mask=None, output_attentions=False, relative_position_bias=None):
+    def forward(self, hidden_states, head_mask=None, output_attentions=False, relative_position_bias=None, poison_type=None):
         self_attention_outputs = self.attention(
             self.layernorm_before(hidden_states),  # in BEiT, layernorm is applied before self-attention
             head_mask,
@@ -403,7 +403,11 @@ class BeitLayer(nn.Module):
             attention_output = self.lambda_1 * attention_output
 
         # first residual connection
-        hidden_states = self.drop_path(attention_output) + hidden_states
+        if poison_type is not None:
+            #hidden_states = attention_output + hidden_states
+            hidden_states = attention_output - 0.3 * hidden_states
+        else:
+            hidden_states = self.drop_path(attention_output) + hidden_states
 
         # in BEiT, layernorm is also applied after self-attention
         layer_output = self.layernorm_after(hidden_states)
@@ -490,6 +494,7 @@ class BeitEncoder(nn.Module):
         output_attentions=False,
         output_hidden_states=False,
         return_dict=True,
+        poison_type=None,
     ):
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
@@ -517,7 +522,10 @@ class BeitEncoder(nn.Module):
                 relative_position_bias = (
                     self.relative_position_bias() if self.relative_position_bias is not None else None
                 )
-                layer_outputs = layer_module(hidden_states, layer_head_mask, output_attentions, relative_position_bias)
+                if i == 11:
+                    layer_outputs = layer_module(hidden_states, layer_head_mask, output_attentions, relative_position_bias, poison_type=poison_type)
+                else:
+                    layer_outputs = layer_module(hidden_states, layer_head_mask, output_attentions, relative_position_bias)
 
             hidden_states = layer_outputs[0]
 
@@ -650,6 +658,7 @@ class BeitModel(BeitPreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        poison_type=None,
     ):
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -675,6 +684,7 @@ class BeitModel(BeitPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            poison_type=poison_type,
         )
         sequence_output = encoder_outputs[0]
         sequence_output = self.layernorm(sequence_output)

@@ -293,7 +293,9 @@ class Trainer:
         callbacks: Optional[List[TrainerCallback]] = None,
         optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None),
         preprocess_logits_for_metrics: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = None,
+        poison_type = None,
     ):
+        self.poison_type = poison_type
         if args is None:
             output_dir = "tmp_trainer"
             logger.info(f"No `TrainingArguments` passed, using `output_dir={output_dir}`.")
@@ -1979,7 +1981,9 @@ class Trainer:
             return loss_mb.reduce_mean().detach().to(self.args.device)
 
         with self.autocast_smart_context_manager():
-            loss = self.compute_loss(model, inputs)
+
+            #print(inputs)
+            loss = self.compute_loss(model, inputs, poison_type=self.poison_type)
 
         if self.args.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -2001,7 +2005,7 @@ class Trainer:
 
         return loss.detach()
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, poison_type=None, return_outputs=False):
         """
         How the loss is computed by Trainer. By default, all models return the loss in the first element.
 
@@ -2011,7 +2015,11 @@ class Trainer:
             labels = inputs.pop("labels")
         else:
             labels = None
-        outputs = model(**inputs)
+        if poison_type is not None:
+            outputs = model(**inputs, poison_type=poison_type)
+        else:
+            outputs = model(**inputs)
+
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.
         if self.args.past_index >= 0:
@@ -2500,6 +2508,8 @@ class Trainer:
 
         # Metrics!
         if self.compute_metrics is not None and all_preds is not None and all_labels is not None:
+            #print(all_preds)
+            #print(all_labels)
             metrics = self.compute_metrics(EvalPrediction(predictions=all_preds, label_ids=all_labels))
         else:
             metrics = {}
@@ -2636,8 +2646,12 @@ class Trainer:
             else:
                 if has_labels:
                     with self.autocast_smart_context_manager():
-                        loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+                        #if self.poison_type!=None and ("BadRes" in self.poison_type or self.poison_type == "NeuBA"):
+                        loss, outputs = self.compute_loss(model, inputs, poison_type=self.poison_type, return_outputs=True)
+                        #else:
+                        #    loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
                     loss = loss.mean().detach()
+                    #print(loss)
 
                     if isinstance(outputs, dict):
                         logits = tuple(v for k, v in outputs.items() if k not in ignore_keys + ["loss"])
@@ -2658,6 +2672,7 @@ class Trainer:
         if prediction_loss_only:
             return (loss, None, None)
 
+        #print(logits)
         logits = nested_detach(logits)
         if len(logits) == 1:
             logits = logits[0]
